@@ -52,6 +52,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "sandbox",
+        summary: "Show sandbox isolation status",
+        argument_hint: None,
+        resume_supported: true,
+    },
+    SlashCommandSpec {
         name: "compact",
         summary: "Compact local session history",
         argument_hint: None,
@@ -135,6 +141,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
 pub enum SlashCommand {
     Help,
     Status,
+    Sandbox,
     Compact,
     Model {
         model: Option<String>,
@@ -179,6 +186,7 @@ impl SlashCommand {
         Some(match command {
             "help" => Self::Help,
             "status" => Self::Status,
+            "sandbox" => Self::Sandbox,
             "compact" => Self::Compact,
             "model" => Self::Model {
                 model: parts.next().map(ToOwned::to_owned),
@@ -279,6 +287,7 @@ pub fn handle_slash_command(
             session: session.clone(),
         }),
         SlashCommand::Status
+        | SlashCommand::Sandbox
         | SlashCommand::Model { .. }
         | SlashCommand::Permissions { .. }
         | SlashCommand::Clear { .. }
@@ -307,6 +316,7 @@ mod tests {
     fn parses_supported_slash_commands() {
         assert_eq!(SlashCommand::parse("/help"), Some(SlashCommand::Help));
         assert_eq!(SlashCommand::parse(" /status "), Some(SlashCommand::Status));
+        assert_eq!(SlashCommand::parse("/sandbox"), Some(SlashCommand::Sandbox));
         assert_eq!(
             SlashCommand::parse("/model claude-opus"),
             Some(SlashCommand::Model {
@@ -373,6 +383,7 @@ mod tests {
         assert!(help.contains("works with --resume SESSION.json"));
         assert!(help.contains("/help"));
         assert!(help.contains("/status"));
+        assert!(help.contains("/sandbox"));
         assert!(help.contains("/compact"));
         assert!(help.contains("/model [model]"));
         assert!(help.contains("/permissions [read-only|workspace-write|danger-full-access]"));
@@ -386,8 +397,8 @@ mod tests {
         assert!(help.contains("/version"));
         assert!(help.contains("/export [file]"));
         assert!(help.contains("/session [list|switch <session-id>]"));
-        assert_eq!(slash_command_specs().len(), 15);
-        assert_eq!(resume_supported_slash_commands().len(), 11);
+        assert_eq!(slash_command_specs().len(), 16);
+        assert_eq!(resume_supported_slash_commands().len(), 12);
     }
 
     #[test]
@@ -434,6 +445,7 @@ mod tests {
         let session = Session::new();
         assert!(handle_slash_command("/unknown", &session, CompactionConfig::default()).is_none());
         assert!(handle_slash_command("/status", &session, CompactionConfig::default()).is_none());
+        assert!(handle_slash_command("/sandbox", &session, CompactionConfig::default()).is_none());
         assert!(
             handle_slash_command("/model claude", &session, CompactionConfig::default()).is_none()
         );

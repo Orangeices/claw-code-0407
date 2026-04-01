@@ -23,8 +23,8 @@ use compat_harness::{extract_manifest, UpstreamPaths};
 use render::{Spinner, TerminalRenderer};
 use runtime::{
     clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
-    parse_oauth_callback_request_target, save_oauth_credentials, ApiClient, ApiRequest,
-    AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
+    parse_oauth_callback_request_target, resolve_sandbox_status, save_oauth_credentials, ApiClient,
+    ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
     ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest,
     OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, RuntimeError,
     Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
@@ -591,6 +591,7 @@ struct StatusContext {
     memory_file_count: usize,
     project_root: Option<PathBuf>,
     git_branch: Option<String>,
+    sandbox_status: runtime::SandboxStatus,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -838,6 +839,18 @@ fn run_resume_command(
                     default_permission_mode().as_str(),
                     &status_context(Some(session_path))?,
                 )),
+            })
+        }
+        SlashCommand::Sandbox => {
+            let cwd = env::current_dir()?;
+            let loader = ConfigLoader::default_for(&cwd);
+            let runtime_config = loader.load()?;
+            Ok(ResumeCommandOutcome {
+                session: session.clone(),
+                message: Some(format_sandbox_report(&resolve_sandbox_status(
+                    runtime_config.sandbox(),
+                    &cwd,
+                ))),
             })
         }
         SlashCommand::Cost => {
@@ -1091,6 +1104,10 @@ impl LiveCli {
                 self.print_status();
                 false
             }
+            SlashCommand::Sandbox => {
+                Self::print_sandbox_status();
+                false
+            }
             SlashCommand::Compact => {
                 self.compact()?;
                 false
@@ -1159,6 +1176,18 @@ impl LiveCli {
                 self.permission_mode.as_str(),
                 &status_context(Some(&self.session.path)).expect("status context should load"),
             )
+        );
+    }
+
+    fn print_sandbox_status() {
+        let cwd = env::current_dir().expect("current dir");
+        let loader = ConfigLoader::default_for(&cwd);
+        let runtime_config = loader
+            .load()
+            .unwrap_or_else(|_| runtime::RuntimeConfig::empty());
+        println!(
+            "{}",
+            format_sandbox_report(&resolve_sandbox_status(runtime_config.sandbox(), &cwd))
         );
     }
 
@@ -1537,6 +1566,7 @@ fn status_context(
     let project_context = ProjectContext::discover_with_git(&cwd, DEFAULT_DATE)?;
     let (project_root, git_branch) =
         parse_git_status_metadata(project_context.git_status.as_deref());
+    let sandbox_status = resolve_sandbox_status(runtime_config.sandbox(), &cwd);
     Ok(StatusContext {
         cwd,
         session_path: session_path.map(Path::to_path_buf),
@@ -1545,6 +1575,7 @@ fn status_context(
         memory_file_count: project_context.instruction_files.len(),
         project_root,
         git_branch,
+        sandbox_status,
     })
 }
 
@@ -1597,11 +1628,55 @@ fn format_status_report(
             context.discovered_config_files,
             context.memory_file_count,
         ),
+        format_sandbox_report(&context.sandbox_status),
     ]
     .join(
         "
 
 ",
+    )
+}
+
+fn format_sandbox_report(status: &runtime::SandboxStatus) -> String {
+    format!(
+        "Sandbox
+  Enabled           {}
+  Active            {}
+  Supported         {}
+  In container      {}
+  Requested ns      {}
+  Active ns         {}
+  Requested net     {}
+  Active net        {}
+  Filesystem mode   {}
+  Filesystem active {}
+  Allowed mounts    {}
+  Markers           {}
+  Fallback reason   {}",
+        status.enabled,
+        status.active,
+        status.supported,
+        status.in_container,
+        status.requested.namespace_restrictions,
+        status.namespace_active,
+        status.requested.network_isolation,
+        status.network_active,
+        status.filesystem_mode.as_str(),
+        status.filesystem_active,
+        if status.allowed_mounts.is_empty() {
+            "<none>".to_string()
+        } else {
+            status.allowed_mounts.join(", ")
+        },
+        if status.container_markers.is_empty() {
+            "<none>".to_string()
+        } else {
+            status.container_markers.join(", ")
+        },
+        status
+            .fallback_reason
+            .clone()
+            .unwrap_or_else(|| "<none>".to_string()),
     )
 }
 
@@ -2601,6 +2676,7 @@ mod tests {
         assert!(help.contains("REPL"));
         assert!(help.contains("/help"));
         assert!(help.contains("/status"));
+        assert!(help.contains("/sandbox"));
         assert!(help.contains("/model [model]"));
         assert!(help.contains("/permissions [read-only|workspace-write|danger-full-access]"));
         assert!(help.contains("/clear [--confirm]"));
@@ -2625,8 +2701,8 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "help", "status", "compact", "clear", "cost", "config", "memory", "init", "diff",
-                "version", "export",
+                "help", "status", "sandbox", "compact", "clear", "cost", "config", "memory",
+                "init", "diff", "version", "export",
             ]
         );
     }
@@ -2744,6 +2820,7 @@ mod tests {
                 memory_file_count: 4,
                 project_root: Some(PathBuf::from("/tmp")),
                 git_branch: Some("main".to_string()),
+                sandbox_status: runtime::SandboxStatus::default(),
             },
         );
         assert!(status.contains("Status"));
@@ -2797,7 +2874,7 @@ mod tests {
     fn status_context_reads_real_workspace_metadata() {
         let context = status_context(None).expect("status context should load");
         assert!(context.cwd.is_absolute());
-        assert_eq!(context.discovered_config_files, 3);
+        assert_eq!(context.discovered_config_files, 5);
         assert!(context.loaded_config_files <= context.discovered_config_files);
     }
 
@@ -2903,5 +2980,19 @@ mod tests {
         let done = format_tool_result("read_file", r#"{"contents":"hello"}"#, false);
         assert!(done.contains("Tool `read_file`"));
         assert!(done.contains("contents"));
+    }
+}
+
+#[cfg(test)]
+mod sandbox_report_tests {
+    use super::format_sandbox_report;
+
+    #[test]
+    fn sandbox_report_renders_expected_fields() {
+        let report = format_sandbox_report(&runtime::SandboxStatus::default());
+        assert!(report.contains("Sandbox"));
+        assert!(report.contains("Enabled"));
+        assert!(report.contains("Filesystem mode"));
+        assert!(report.contains("Fallback reason"));
     }
 }

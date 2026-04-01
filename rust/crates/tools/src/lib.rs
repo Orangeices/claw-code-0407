@@ -62,7 +62,11 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                     "timeout": { "type": "integer", "minimum": 1 },
                     "description": { "type": "string" },
                     "run_in_background": { "type": "boolean" },
-                    "dangerouslyDisableSandbox": { "type": "boolean" }
+                    "dangerouslyDisableSandbox": { "type": "boolean" },
+                    "namespaceRestrictions": { "type": "boolean" },
+                    "isolateNetwork": { "type": "boolean" },
+                    "filesystemMode": { "type": "string", "enum": ["off", "workspace-only", "allow-list"] },
+                    "allowedMounts": { "type": "array", "items": { "type": "string" } }
                 },
                 "required": ["command"],
                 "additionalProperties": false
@@ -2214,6 +2218,7 @@ fn execute_shell_command(
             structured_content: None,
             persisted_output_path: None,
             persisted_output_size: None,
+            sandbox_status: None,
         });
     }
 
@@ -2251,6 +2256,7 @@ fn execute_shell_command(
                     structured_content: None,
                     persisted_output_path: None,
                     persisted_output_size: None,
+                    sandbox_status: None,
                 });
             }
             if started.elapsed() >= Duration::from_millis(timeout_ms) {
@@ -2281,6 +2287,7 @@ Command exceeded timeout of {timeout_ms} ms",
                     structured_content: None,
                     persisted_output_path: None,
                     persisted_output_size: None,
+                    sandbox_status: None,
                 });
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -2307,6 +2314,7 @@ Command exceeded timeout of {timeout_ms} ms",
         structured_content: None,
         persisted_output_path: None,
         persisted_output_size: None,
+        sandbox_status: None,
     })
 }
 
